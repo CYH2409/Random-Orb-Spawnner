@@ -1,155 +1,159 @@
 -- Orb Collector System - Single Script
--- Designed to run as a ServerScript in ServerScriptService
+-- Runs as a ServerScript in ServerScriptService
 -- Demonstrates CFrame math, physics, metatables, services, raycasting, tweens, events.
 
-local OrbManager = {}
+local OrbManager = {} -- table placeholder for the orb manager (defined later)
 
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local Debris = game:GetService("Debris")
-local TweenService = game:GetService("TweenService")
-local CollectionService = game:GetService("CollectionService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Workspace = game:GetService("Workspace")
+-- // Service references
+local Players = game:GetService("Players") -- gets the Players service to manage player objects
+local RunService = game:GetService("RunService") -- provides Heartbeat event for frame updates
+local Debris = game:GetService("Debris") -- handles timed cleanup of instances
+local TweenService = game:GetService("TweenService") -- used to animate orbs
+local CollectionService = game:GetService("CollectionService") -- lets us tag objects
+local ReplicatedStorage = game:GetService("ReplicatedStorage") -- shared storage between client/server
+local Workspace = game:GetService("Workspace") -- main 3D world
 
--- Remote setup (create if missing) for client UI / feedback
-local remFolder = Instance.new("Folder")
-remFolder.Name = "OrbRemotes"
-remFolder.Parent = ReplicatedStorage
-local RemoteEvent_PlayerCollected = Instance.new("RemoteEvent")
+-- // RemoteEvents setup (for client communication)
+local remFolder = Instance.new("Folder") -- creates a folder to store remotes
+remFolder.Name = "OrbRemotes" -- names it "OrbRemotes"
+remFolder.Parent = ReplicatedStorage -- stores it in ReplicatedStorage for both sides to access
+
+local RemoteEvent_PlayerCollected = Instance.new("RemoteEvent") -- remote to notify when player collects an orb
 RemoteEvent_PlayerCollected.Name = "PlayerCollected"
 RemoteEvent_PlayerCollected.Parent = remFolder
-local RemoteEvent_OrbSpawned = Instance.new("RemoteEvent")
+
+local RemoteEvent_OrbSpawned = Instance.new("RemoteEvent") -- remote to notify when a new orb spawns
 RemoteEvent_OrbSpawned.Name = "OrbSpawned"
 RemoteEvent_OrbSpawned.Parent = remFolder
 
--- Configuration
+-- // Configuration table (adjust gameplay here)
 local CONFIG = {
-	OrbModelName = "CollectOrb",
-	SpawnInterval = 6, -- seconds
-	MaxOrbs = 12,
-	OrbLifetime = 35, -- seconds
-	AttractionRadius = 12,
-	AttractionForce = 60,
-	PointsPerOrb = 10,
-	SpawnArea = {
+	OrbModelName = "CollectOrb", -- name for orb model
+	SpawnInterval = 6, -- seconds between spawn attempts
+	MaxOrbs = 12, -- maximum number of orbs at once
+	OrbLifetime = 35, -- seconds before orb cleanup
+	AttractionRadius = 12, -- range where orbs start moving toward player
+	AttractionForce = 60, -- how strongly orbs pull toward the player
+	PointsPerOrb = 10, -- points per orb collected
+	SpawnArea = { -- defines the center and size of spawn area
 		Center = Vector3.new(0, 5, 0),
 		Size = Vector3.new(80, 15, 80)
 	},
 }
 
--- Utility functions
+-- // Utility function: returns a random Vector3 within a defined box area
 local function randomPointWithin(center, size)
-	local x = center.X + (math.random() - 0.5) * size.X
-	local y = center.Y + (math.random() - 0.5) * size.Y
-	local z = center.Z + (math.random() - 0.5) * size.Z
-	return Vector3.new(x,y,z)
+	local x = center.X + (math.random() - 0.5) * size.X -- random offset in X
+	local y = center.Y + (math.random() - 0.5) * size.Y -- random offset in Y
+	local z = center.Z + (math.random() - 0.5) * size.Z -- random offset in Z
+	return Vector3.new(x,y,z) -- return as Vector3
 end
 
+-- // Debug print toggle function
 local function debugPrint(...)
-	-- Toggle for debug verbosity
-	if false then
+	if false then -- change to true to enable debug output
 		print(...)
 	end
 end
 
--- Basic object-oriented utility via metatables
+-- // Simple OOP (class) helper using metatables
 local function class(template)
-	template = template or {}
-	template.__index = template
-	function template:new(o)
+	template = template or {} -- base class table
+	template.__index = template -- allows methods to be called via colon syntax
+	function template:new(o) -- constructor method
 		o = o or {}
 		setmetatable(o, self)
-		if o.init then o:init() end
+		if o.init then o:init() end -- call init() if defined
 		return o
 	end
 	return template
 end
 
--- Orb class
+-- // Orb class (each orb is its own object)
 local Orb = class()
 
 function Orb:init()
-	-- Create physical orb instance
-	local model = Instance.new("Part")
-	model.Shape = Enum.PartType.Ball
-	model.Material = Enum.Material.Neon
-	model.Anchored = false
-	model.CanCollide = false
-	model.Size = Vector3.new(1.2,1.2,1.2)
-	model.CFrame = CFrame.new(self.position)
+	-- Create visual and physical part
+	local model = Instance.new("Part") -- new Part instance
+	model.Shape = Enum.PartType.Ball -- make it spherical
+	model.Material = Enum.Material.Neon -- shiny glowing material
+	model.Anchored = false -- allow physics
+	model.CanCollide = false -- prevent bouncing on players
+	model.Size = Vector3.new(1.2,1.2,1.2) -- orb size
+	model.CFrame = CFrame.new(self.position) -- position at spawn location
 	model.Name = "Orb"
-	model.Parent = Workspace
+	model.Parent = Workspace -- add to workspace so it’s visible
 
-	-- Visual
+	-- Light for glow effect
 	local light = Instance.new("PointLight")
-	light.Range = 12
-	light.Brightness = 2
+	light.Range = 12 -- light radius
+	light.Brightness = 2 -- intensity
 	light.Parent = model
 
-	-- Sound (small pop on spawn)
+	-- Small spawn sound
 	local s = Instance.new("Sound")
-	s.SoundId = "rbxassetid://1843529260" -- small chime (replaceable)
+	s.SoundId = "rbxassetid://1843529260" -- sound asset ID
 	s.Volume = 0.6
 	s.Parent = model
-	s:Play()
+	s:Play() -- play immediately
 
-	-- Physics helper
+	-- BodyVelocity for motion control
 	local bv = Instance.new("BodyVelocity")
-	bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
-	bv.Velocity = Vector3.new(0,0,0)
+	bv.MaxForce = Vector3.new(1e5, 1e5, 1e5) -- allow strong movement
+	bv.Velocity = Vector3.new(0,0,0) -- start still
 	bv.Parent = model
 
-	-- Tag for other systems
+	-- Tag for tracking
 	CollectionService:AddTag(model, "OrbTag")
 
-	self.instance = model
+	self.instance = model -- store reference
 	self.bodyVelocity = bv
-	self.spawnTick = tick()
-	self.collected = false
+	self.spawnTick = tick() -- record spawn time
+	self.collected = false -- flag to check if already collected
 
-	-- make orb bounce gently using Velocity and CFrame math
+	-- Oscillator for gentle floating motion
 	self.oscillator = {
-		speed = 2 + math.random() * 1.5,
-		magnitude = 0.35 + math.random() * 0.65,
-		phase = math.random() * math.pi * 2,
+		speed = 2 + math.random() * 1.5, -- wave speed
+		magnitude = 0.35 + math.random() * 0.65, -- amplitude
+		phase = math.random() * math.pi * 2, -- random phase offset
 	}
 
-	-- safety cleanup
+	-- Auto cleanup after lifespan
 	Debris:AddItem(model, CONFIG.OrbLifetime + 2)
 end
 
+-- Update function, runs every frame
 function Orb:update(dt)
-	if self.collected then return end
-	if not self.instance or not self.instance.Parent then return end
+	if self.collected then return end -- skip if already collected
+	if not self.instance or not self.instance.Parent then return end -- skip if deleted
 
-	-- Floating/oscillatory motion using CFrame math
+	-- Oscillate vertically (float animation)
 	local t = (tick() - self.spawnTick)
 	local dy = math.sin(t * self.oscillator.speed + self.oscillator.phase) * self.oscillator.magnitude
 	local base = self.instance.Position
 	local targetY = base.Y + dy
 	local targetPos = Vector3.new(base.X, targetY, base.Z)
 	local desired = (targetPos - self.instance.Position) * 12
-	self.bodyVelocity.Velocity = Vector3.new(desired.X, desired.Y, desired.Z)
+	self.bodyVelocity.Velocity = Vector3.new(desired.X, desired.Y, desired.Z) -- apply float motion
 
-	-- Attraction logic: if player is close, pull gently
+	-- Attraction logic: pull orb toward nearby players
 	local nearPlayer = OrbManager:findNearestPlayer(self.instance.Position, CONFIG.AttractionRadius)
-	if nearPlayer then
+	if nearPlayer then -- if player found
 		local humanoidRoot = nearPlayer.Character and nearPlayer.Character:FindFirstChild("HumanoidRootPart")
 		if humanoidRoot then
-			local dir = (humanoidRoot.Position - self.instance.Position)
-			local dist = dir.Magnitude
+			local dir = (humanoidRoot.Position - self.instance.Position) -- direction vector
+			local dist = dir.Magnitude -- distance between orb and player
 			local force = math.clamp((CONFIG.AttractionRadius - dist) / CONFIG.AttractionRadius, 0, 1) * CONFIG.AttractionForce
-			local vel = dir.Unit * force
-			self.bodyVelocity.Velocity = self.bodyVelocity.Velocity + vel
-			-- If very close, collect
-			if dist < 2.2 then
+			local vel = dir.Unit * force -- scaled velocity
+			self.bodyVelocity.Velocity = self.bodyVelocity.Velocity + vel -- apply pull
+			if dist < 2.2 then -- if close enough, collect
 				OrbManager:collectOrb(self, nearPlayer)
 			end
 		end
 	end
 end
 
+-- Safely destroy orb
 function Orb:destroy()
 	if not self.instance then return end
 	pcall(function()
@@ -159,49 +163,54 @@ function Orb:destroy()
 	self.instance = nil
 end
 
--- Manager for spawning and bookkeeping
+-- // Orb Manager (handles all orbs globally)
 local OrbManager = class({ orbs = {}, playersScore = {} })
 
 function OrbManager:init()
-	self.orbs = {}
-	self.spawnAccumulator = 0
+	self.orbs = {} -- list of all active orbs
+	self.spawnAccumulator = 0 -- time counter for spawns
 	self.lastSpawn = 0
 	self.maxOrbs = CONFIG.MaxOrbs
 end
 
+-- Spawns a new orb at position
 function OrbManager:spawnOrb(pos)
-	if #self.orbs >= self.maxOrbs then return nil end
-	local orb = Orb:new({ position = pos })
+	if #self.orbs >= self.maxOrbs then return nil end -- don’t exceed limit
+	local orb = Orb:new({ position = pos }) -- create orb instance
 	table.insert(self.orbs, orb)
-	RemoteEvent_OrbSpawned:FireAllClients(orb.instance.Position)
+	RemoteEvent_OrbSpawned:FireAllClients(orb.instance.Position) -- tell clients
 	return orb
 end
 
+-- Handles player collecting orb
 function OrbManager:collectOrb(orb, player)
 	if orb.collected then return end
 	orb.collected = true
-	-- give points
 	local pid = player.UserId
-	self.playersScore[pid] = (self.playersScore[pid] or 0) + CONFIG.PointsPerOrb
-	-- visual & sound feedback
+	self.playersScore[pid] = (self.playersScore[pid] or 0) + CONFIG.PointsPerOrb -- add points
+
+	-- Play collect sound
 	if orb.instance and orb.instance.Parent then
 		local s = Instance.new("Sound")
-		s.SoundId = "rbxassetid://1843529838" -- collect sound
+		s.SoundId = "rbxassetid://1843529838"
 		s.Parent = orb.instance
 		s:Play()
 	end
 	RemoteEvent_PlayerCollected:FireClient(player, CONFIG.PointsPerOrb, orb.instance.Position)
 
-	-- burst tween animation
+	-- Tween shrink + fade effect
 	if orb.instance then
-		local tw = TweenService:Create(orb.instance, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Size = Vector3.new(0.4,0.4,0.4), Transparency = 1})
+		local tw = TweenService:Create(
+			orb.instance,
+			TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+			{Size = Vector3.new(0.4,0.4,0.4), Transparency = 1}
+		)
 		tw:Play()
 		tw.Completed:Wait()
 	end
 
-	orb:destroy()
-	-- remove from manager list
-	for i,v in ipairs(self.orbs) do
+	orb:destroy() -- cleanup
+	for i,v in ipairs(self.orbs) do -- remove from active list
 		if v == orb then
 			table.remove(self.orbs, i)
 			break
@@ -209,6 +218,7 @@ function OrbManager:collectOrb(orb, player)
 	end
 end
 
+-- Finds the closest player to a point within a radius
 function OrbManager:findNearestPlayer(position, radius)
 	local nearest = nil
 	local nd = radius
@@ -225,6 +235,7 @@ function OrbManager:findNearestPlayer(position, radius)
 	return nearest
 end
 
+-- Removes invalid orbs from list
 function OrbManager:cleanupOrbs()
 	for i = #self.orbs,1,-1 do
 		local o = self.orbs[i]
@@ -234,8 +245,8 @@ function OrbManager:cleanupOrbs()
 	end
 end
 
+-- Controls spawning based on timer
 function OrbManager:spawnTick(dt)
-	-- attempt spawn every CONFIG.SpawnInterval seconds
 	self.spawnAccumulator = self.spawnAccumulator + dt
 	if self.spawnAccumulator >= CONFIG.SpawnInterval then
 		self.spawnAccumulator = 0
@@ -243,7 +254,6 @@ function OrbManager:spawnTick(dt)
 		while #self.orbs < self.maxOrbs and attempts < 6 do
 			attempts = attempts + 1
 			local pos = randomPointWithin(CONFIG.SpawnArea.Center, CONFIG.SpawnArea.Size)
-			-- try to project the spawn down to nearest surface using raycasting
 			local rayOrigin = pos + Vector3.new(0, 50, 0)
 			local rayDir = Vector3.new(0, -120, 0)
 			local raycastParams = RaycastParams.new()
@@ -253,18 +263,13 @@ function OrbManager:spawnTick(dt)
 			local res = Workspace:Raycast(rayOrigin, rayDir, raycastParams)
 			if res then
 				local groundPos = res.Position + Vector3.new(0, 2, 0)
-				-- ensure not inside other objects
-				local overlapParts = Workspace:GetPartsInPart(Instance.new("Part")) -- cheap placeholder to avoid API misuse
-				-- spawn orb
 				self:spawnOrb(groundPos)
-			else
-				-- no surface found; try next attempt
 			end
 		end
 	end
 end
 
--- Scoreboard handling
+-- Ensures player has a leaderstats scoreboard
 local function ensureLeaderstats(player)
 	local leaderstats = player:FindFirstChild("leaderstats")
 	if not leaderstats then
@@ -282,16 +287,14 @@ local function ensureLeaderstats(player)
 	return score
 end
 
+-- // Player connections
 Players.PlayerAdded:Connect(function(player)
-	-- Initialize player score
 	OrbManager.playersScore[player.UserId] = OrbManager.playersScore[player.UserId] or 0
 	ensureLeaderstats(player)
 
-	-- When a player respawns, give them a small impulse to avoid stuckness
 	player.CharacterAdded:Connect(function(char)
 		local hrp = char:WaitForChild("HumanoidRootPart", 5)
 		if hrp then
-			-- small random nudge using BodyVelocity then cleanup
 			local b = Instance.new("BodyVelocity")
 			b.MaxForce = Vector3.new(5e4,5e4,5e4)
 			b.Velocity = Vector3.new((math.random()-0.5)*12, 0, (math.random()-0.5)*12)
@@ -300,35 +303,32 @@ Players.PlayerAdded:Connect(function(player)
 		end
 	end)
 
-	-- Client request to fetch current score
+	-- client feedback remote (server doesn’t trust input)
 	RemoteEvent_PlayerCollected.OnServerEvent:Connect(function(from, points, pos)
-		-- This remote is fired to notify; but do not trust clients for scoring
-		-- Keep server-authoritative scoring above.
+		-- do nothing (server authoritative)
 	end)
 end)
 
 Players.PlayerRemoving:Connect(function(player)
-	-- leave score in table for rejoin persistence
+	-- keep score in memory for reconnect
 end)
 
--- Maintain ticker
+-- Initialize system
 OrbManager:init()
 
--- Main heartbeat update
+-- // Main loop using RunService Heartbeat
 local accumulated = 0
 RunService.Heartbeat:Connect(function(dt)
 	accumulated = accumulated + dt
-	-- Update orbs movement
 	for i,orb in ipairs(OrbManager.orbs) do
 		pcall(function()
 			orb:update(dt)
 		end)
 	end
-	-- spawn logic tick
 	OrbManager:spawnTick(dt)
-	-- cleanup
 	OrbManager:cleanupOrbs()
-	-- update leaderstats periodically
+
+	-- update leaderstats every ~2 seconds
 	if math.floor(tick()) % 2 == 0 then
 		for _,p in pairs(Players:GetPlayers()) do
 			local ls = p:FindFirstChild("leaderstats")
@@ -339,7 +339,7 @@ RunService.Heartbeat:Connect(function(dt)
 	end
 end)
 
--- Admin command: manual spawn
+-- // Admin helper to manually spawn 3 orbs
 local function adminSpawn(pos)
 	if typeof(pos) ~= "Vector3" then
 		pos = CONFIG.SpawnArea.Center
@@ -349,7 +349,7 @@ local function adminSpawn(pos)
 	end
 end
 
--- Expose simple API via Module-like table for other scripts
+-- // Public API for other scripts
 local API = {}
 API.spawnOrbAt = function(position)
 	return OrbManager:spawnOrb(position)
@@ -359,10 +359,8 @@ API.getScores = function()
 end
 API.forceSpawn = adminSpawn
 
--- Attach API to a global-like table for other scripts to require (not recommended in production)
-_G.OrbCollectorAPI = API
+_G.OrbCollectorAPI = API -- expose globally (for quick debugging, not production)
 
--- Final notes and minimal safety checks
-print("OrbCollector script initialized. MaxOrbs=", CONFIG.MaxOrbs)
+print("OrbCollector script initialized. MaxOrbs=", CONFIG.MaxOrbs) -- confirmation log
 
 -- End of script
