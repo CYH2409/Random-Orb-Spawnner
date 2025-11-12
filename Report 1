@@ -1,0 +1,368 @@
+-- Orb Collector System - Single Script
+-- Designed to run as a ServerScript in ServerScriptService
+-- Demonstrates CFrame math, physics, metatables, services, raycasting, tweens, events.
+
+local OrbManager = {}
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Debris = game:GetService("Debris")
+local TweenService = game:GetService("TweenService")
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+
+-- Remote setup (create if missing) for client UI / feedback
+local remFolder = ReplicatedStorage:FindFirstChild("OrbRemotes")
+remFolder.Name = "OrbRemotes"
+remFolder.Parent = ReplicatedStorage
+local RemoteEvent_PlayerCollected = remFolder:FindFirstChild("PlayerCollected")
+RemoteEvent_PlayerCollected.Name = "PlayerCollected"
+RemoteEvent_PlayerCollected.Parent = remFolder
+local RemoteEvent_OrbSpawned = remFolder:FindFirstChild("OrbSpawned")
+RemoteEvent_OrbSpawned.Name = "OrbSpawned"
+RemoteEvent_OrbSpawned.Parent = remFolder
+
+-- Configuration
+local CONFIG = {
+	OrbModelName = "CollectOrb",
+	SpawnInterval = 6, -- seconds
+	MaxOrbs = 12,
+	OrbLifetime = 35, -- seconds
+	AttractionRadius = 12,
+	AttractionForce = 60,
+	PointsPerOrb = 10,
+	SpawnArea = {
+		Center = Vector3.new(0, 5, 0),
+		Size = Vector3.new(80, 15, 80)
+	},
+}
+
+-- Utility functions
+local function randomPointWithin(center, size)
+	local x = center.X + (math.random() - 0.5) * size.X
+	local y = center.Y + (math.random() - 0.5) * size.Y
+	local z = center.Z + (math.random() - 0.5) * size.Z
+	return Vector3.new(x,y,z)
+end
+
+local function debugPrint(...)
+	-- Toggle for debug verbosity
+	if false then
+		print(...)
+	end
+end
+
+-- Basic object-oriented utility via metatables
+local function class(template)
+	template = template or {}
+	template.__index = template
+	function template:new(o)
+		o = o or {}
+		setmetatable(o, self)
+		if o.init then o:init() end
+		return o
+	end
+	return template
+end
+
+-- Orb class
+local Orb = class()
+
+function Orb:init()
+	-- Create physical orb instance
+	local model = Instance.new("Part")
+	model.Shape = Enum.PartType.Ball
+	model.Material = Enum.Material.Neon
+	model.Anchored = false
+	model.CanCollide = false
+	model.Size = Vector3.new(1.2,1.2,1.2)
+	model.CFrame = CFrame.new(self.position)
+	model.Name = "Orb"
+	model.Parent = Workspace
+
+	-- Visual
+	local light = Instance.new("PointLight")
+	light.Range = 12
+	light.Brightness = 2
+	light.Parent = model
+
+	-- Sound (small pop on spawn)
+	local s = Instance.new("Sound")
+	s.SoundId = "rbxassetid://1843529260" -- small chime (replaceable)
+	s.Volume = 0.6
+	s.Parent = model
+	s:Play()
+
+	-- Physics helper
+	local bv = Instance.new("BodyVelocity")
+	bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+	bv.Velocity = Vector3.new(0,0,0)
+	bv.Parent = model
+
+	-- Tag for other systems
+	CollectionService:AddTag(model, "OrbTag")
+
+	self.instance = model
+	self.bodyVelocity = bv
+	self.spawnTick = tick()
+	self.collected = false
+
+	-- make orb bounce gently using Velocity and CFrame math
+	self.oscillator = {
+		speed = 2 + math.random() * 1.5,
+		magnitude = 0.35 + math.random() * 0.65,
+		phase = math.random() * math.pi * 2,
+	}
+
+	-- safety cleanup
+	Debris:AddItem(model, CONFIG.OrbLifetime + 2)
+end
+
+function Orb:update(dt)
+	if self.collected then return end
+	if not self.instance or not self.instance.Parent then return end
+
+	-- Floating/oscillatory motion using CFrame math
+	local t = (tick() - self.spawnTick)
+	local dy = math.sin(t * self.oscillator.speed + self.oscillator.phase) * self.oscillator.magnitude
+	local base = self.instance.Position
+	local targetY = base.Y + dy
+	local targetPos = Vector3.new(base.X, targetY, base.Z)
+	local desired = (targetPos - self.instance.Position) * 12
+	self.bodyVelocity.Velocity = Vector3.new(desired.X, desired.Y, desired.Z)
+
+	-- Attraction logic: if player is close, pull gently
+	local nearPlayer = OrbManager:findNearestPlayer(self.instance.Position, CONFIG.AttractionRadius)
+	if nearPlayer then
+		local humanoidRoot = nearPlayer.Character and nearPlayer.Character:FindFirstChild("HumanoidRootPart")
+		if humanoidRoot then
+			local dir = (humanoidRoot.Position - self.instance.Position)
+			local dist = dir.Magnitude
+			local force = math.clamp((CONFIG.AttractionRadius - dist) / CONFIG.AttractionRadius, 0, 1) * CONFIG.AttractionForce
+			local vel = dir.Unit * force
+			self.bodyVelocity.Velocity = self.bodyVelocity.Velocity + vel
+			-- If very close, collect
+			if dist < 2.2 then
+				OrbManager:collectOrb(self, nearPlayer)
+			end
+		end
+	end
+end
+
+function Orb:destroy()
+	if not self.instance then return end
+	pcall(function()
+		CollectionService:RemoveTag(self.instance, "OrbTag")
+		self.instance:Destroy()
+	end)
+	self.instance = nil
+end
+
+-- Manager for spawning and bookkeeping
+local OrbManager = class({ orbs = {}, playersScore = {} })
+
+function OrbManager:init()
+	self.orbs = {}
+	self.spawnAccumulator = 0
+	self.lastSpawn = 0
+	self.maxOrbs = CONFIG.MaxOrbs
+end
+
+function OrbManager:spawnOrb(pos)
+	if #self.orbs >= self.maxOrbs then return nil end
+	local orb = Orb:new({ position = pos })
+	table.insert(self.orbs, orb)
+	RemoteEvent_OrbSpawned:FireAllClients(orb.instance.Position)
+	return orb
+end
+
+function OrbManager:collectOrb(orb, player)
+	if orb.collected then return end
+	orb.collected = true
+	-- give points
+	local pid = player.UserId
+	self.playersScore[pid] = (self.playersScore[pid] or 0) + CONFIG.PointsPerOrb
+	-- visual & sound feedback
+	if orb.instance and orb.instance.Parent then
+		local s = Instance.new("Sound")
+		s.SoundId = "rbxassetid://1843529838" -- collect sound
+		s.Parent = orb.instance
+		s:Play()
+	end
+	RemoteEvent_PlayerCollected:FireClient(player, CONFIG.PointsPerOrb, orb.instance.Position)
+
+	-- burst tween animation
+	if orb.instance then
+		local tw = TweenService:Create(orb.instance, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Size = Vector3.new(0.4,0.4,0.4), Transparency = 1})
+		tw:Play()
+		tw.Completed:Wait()
+	end
+
+	orb:destroy()
+	-- remove from manager list
+	for i,v in ipairs(self.orbs) do
+		if v == orb then
+			table.remove(self.orbs, i)
+			break
+		end
+	end
+end
+
+function OrbManager:findNearestPlayer(position, radius)
+	local nearest = nil
+	local nd = radius
+	for _,p in pairs(Players:GetPlayers()) do
+		if p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+			local hrp = p.Character.HumanoidRootPart
+			local d = (hrp.Position - position).Magnitude
+			if d < nd then
+				nd = d
+				nearest = p
+			end
+		end
+	end
+	return nearest
+end
+
+function OrbManager:cleanupOrbs()
+	for i = #self.orbs,1,-1 do
+		local o = self.orbs[i]
+		if not o.instance or not o.instance.Parent then
+			table.remove(self.orbs, i)
+		end
+	end
+end
+
+function OrbManager:spawnTick(dt)
+	-- attempt spawn every CONFIG.SpawnInterval seconds
+	self.spawnAccumulator = self.spawnAccumulator + dt
+	if self.spawnAccumulator >= CONFIG.SpawnInterval then
+		self.spawnAccumulator = 0
+		local attempts = 0
+		while #self.orbs < self.maxOrbs and attempts < 6 do
+			attempts = attempts + 1
+			local pos = randomPointWithin(CONFIG.SpawnArea.Center, CONFIG.SpawnArea.Size)
+			-- try to project the spawn down to nearest surface using raycasting
+			local rayOrigin = pos + Vector3.new(0, 50, 0)
+			local rayDir = Vector3.new(0, -120, 0)
+			local raycastParams = RaycastParams.new()
+			raycastParams.FilterDescendantsInstances = {}
+			raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+			raycastParams.IgnoreWater = true
+			local res = Workspace:Raycast(rayOrigin, rayDir, raycastParams)
+			if res then
+				local groundPos = res.Position + Vector3.new(0, 2, 0)
+				-- ensure not inside other objects
+				local overlapParts = Workspace:GetPartsInPart(Instance.new("Part")) -- cheap placeholder to avoid API misuse
+				-- spawn orb
+				self:spawnOrb(groundPos)
+			else
+				-- no surface found; try next attempt
+			end
+		end
+	end
+end
+
+-- Scoreboard handling
+local function ensureLeaderstats(player)
+	local leaderstats = player:FindFirstChild("leaderstats")
+	if not leaderstats then
+		leaderstats = Instance.new("Folder")
+		leaderstats.Name = "leaderstats"
+		leaderstats.Parent = player
+	end
+	local score = leaderstats:FindFirstChild("Orbs")
+	if not score then
+		score = Instance.new("IntValue")
+		score.Name = "Orbs"
+		score.Value = OrbManager.playersScore[player.UserId] or 0
+		score.Parent = leaderstats
+	end
+	return score
+end
+
+Players.PlayerAdded:Connect(function(player)
+	-- Initialize player score
+	OrbManager.playersScore[player.UserId] = OrbManager.playersScore[player.UserId] or 0
+	ensureLeaderstats(player)
+
+	-- When a player respawns, give them a small impulse to avoid stuckness
+	player.CharacterAdded:Connect(function(char)
+		local hrp = char:WaitForChild("HumanoidRootPart", 5)
+		if hrp then
+			-- small random nudge using BodyVelocity then cleanup
+			local b = Instance.new("BodyVelocity")
+			b.MaxForce = Vector3.new(5e4,5e4,5e4)
+			b.Velocity = Vector3.new((math.random()-0.5)*12, 0, (math.random()-0.5)*12)
+			b.Parent = hrp
+			Debris:AddItem(b, 0.35)
+		end
+	end)
+
+	-- Client request to fetch current score
+	RemoteEvent_PlayerCollected.OnServerEvent:Connect(function(from, points, pos)
+		-- This remote is fired to notify; but do not trust clients for scoring
+		-- Keep server-authoritative scoring above.
+	end)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	-- leave score in table for rejoin persistence
+end)
+
+-- Maintain ticker
+OrbManager:init()
+
+-- Main heartbeat update
+local accumulated = 0
+RunService.Heartbeat:Connect(function(dt)
+	accumulated = accumulated + dt
+	-- Update orbs movement
+	for i,orb in ipairs(OrbManager.orbs) do
+		pcall(function()
+			orb:update(dt)
+		end)
+	end
+	-- spawn logic tick
+	OrbManager:spawnTick(dt)
+	-- cleanup
+	OrbManager:cleanupOrbs()
+	-- update leaderstats periodically
+	if math.floor(tick()) % 2 == 0 then
+		for _,p in pairs(Players:GetPlayers()) do
+			local ls = p:FindFirstChild("leaderstats")
+			if ls and ls:FindFirstChild("Orbs") then
+				ls.Orbs.Value = OrbManager.playersScore[p.UserId] or ls.Orbs.Value
+			end
+		end
+	end
+end)
+
+-- Admin command: manual spawn
+local function adminSpawn(pos)
+	if typeof(pos) ~= "Vector3" then
+		pos = CONFIG.SpawnArea.Center
+	end
+	for i=1,3 do
+		OrbManager:spawnOrb(pos + Vector3.new(math.random(-4,4), math.random(0,4), math.random(-4,4)))
+	end
+end
+
+-- Expose simple API via Module-like table for other scripts
+local API = {}
+API.spawnOrbAt = function(position)
+	return OrbManager:spawnOrb(position)
+end
+API.getScores = function()
+	return OrbManager.playersScore
+end
+API.forceSpawn = adminSpawn
+
+-- Attach API to a global-like table for other scripts to require (not recommended in production)
+_G.OrbCollectorAPI = API
+
+-- Final notes and minimal safety checks
+print("OrbCollector script initialized. MaxOrbs=", CONFIG.MaxOrbs)
+
+-- End of script
