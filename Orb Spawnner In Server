@@ -5,18 +5,18 @@
 local OrbManager = {} -- table placeholder for the orb manager (defined later)
 
 -- // Service references
-local Players = game:GetService("Players") -- gets the Players service to manage player objects
-local RunService = game:GetService("RunService") -- provides Heartbeat event for frame updates
-local Debris = game:GetService("Debris") -- handles timed cleanup of instances
-local TweenService = game:GetService("TweenService") -- used to animate orbs
-local CollectionService = game:GetService("CollectionService") -- lets us tag objects
-local ReplicatedStorage = game:GetService("ReplicatedStorage") -- shared storage between client/server
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Debris = game:GetService("Debris")
+local TweenService = game:GetService("TweenService")
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace") -- main 3D world
 
 -- // RemoteEvents setup (for client communication)
-local remFolder = Instance.new("Folder") -- creates a folder to store remotes
-remFolder.Name = "OrbRemotes" -- names it "OrbRemotes"
-remFolder.Parent = ReplicatedStorage -- stores it in ReplicatedStorage for both sides to access
+local remFolder = Instance.new("Folder")
+remFolder.Name = "OrbRemotes"
+remFolder.Parent = ReplicatedStorage
 
 local RemoteEvent_PlayerCollected = Instance.new("RemoteEvent") -- remote to notify when player collects an orb
 RemoteEvent_PlayerCollected.Name = "PlayerCollected"
@@ -58,12 +58,12 @@ end
 
 -- // Simple OOP (class) helper using metatables
 local function class(template)
-	template = template or {} -- base class table
-	template.__index = template -- allows methods to be called via colon syntax
-	function template:new(o) -- constructor method
+	template = template or {}
+	template.__index = template
+	function template:new(o)
 		o = o or {}
 		setmetatable(o, self)
-		if o.init then o:init() end -- call init() if defined
+		if o.init then o:init() end
 		return o
 	end
 	return template
@@ -74,20 +74,20 @@ local Orb = class()
 
 function Orb:init()
 	-- Create visual and physical part
-	local model = Instance.new("Part") -- new Part instance
-	model.Shape = Enum.PartType.Ball -- make it spherical
-	model.Material = Enum.Material.Neon -- shiny glowing material
-	model.Anchored = false -- allow physics
-	model.CanCollide = false -- prevent bouncing on players
-	model.Size = Vector3.new(1.2,1.2,1.2) -- orb size
-	model.CFrame = CFrame.new(self.position) -- position at spawn location
+	local model = Instance.new("Part")
+	model.Shape = Enum.PartType.Ball
+	model.Material = Enum.Material.Neon
+	model.Anchored = false
+	model.CanCollide = false
+	model.Size = Vector3.new(1.2,1.2,1.2)
+	model.CFrame = CFrame.new(self.position)
 	model.Name = "Orb"
-	model.Parent = Workspace -- add to workspace so it’s visible
+	model.Parent = Workspace 
 
 	-- Light for glow effect
 	local light = Instance.new("PointLight")
-	light.Range = 12 -- light radius
-	light.Brightness = 2 -- intensity
+	light.Range = 12
+	light.Brightness = 2
 	light.Parent = model
 
 	-- Small spawn sound
