@@ -1,7 +1,3 @@
--- Orb Collector System - Single Script
--- Runs as a ServerScript in ServerScriptService
--- Demonstrates CFrame math, physics, metatables, services, raycasting, tweens, events.
-
 local OrbManager = {} -- table placeholder for the orb manager (defined later)
 
 -- // Service references
